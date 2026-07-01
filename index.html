@@ -211,6 +211,7 @@
     </div>
     <div class="topbar-right">
       <div class="sync-bar"><div class="sync-dot" id="syncDot"></div><span id="syncLabel">Salvo</span></div>
+      <button class="btn-icon" id="notifBtn" onclick="initNotifications()" title="Ativar notificações">🔔</button>
       <div id="userAvatarWrap" onclick="toggleUserMenu()"></div>
     </div>
   </div>
@@ -401,6 +402,14 @@ function showApp() {
   const now = new Date();
   document.getElementById('todayBadge') && (document.getElementById('todayBadge').textContent = now.toLocaleDateString('pt-BR',{weekday:'long',day:'2-digit',month:'long',year:'numeric'}));
   renderAll();
+  // auto-request notifications if already granted
+  if (Notification.permission === 'granted') {
+    checkNotifications();
+    if (notifInterval) clearInterval(notifInterval);
+    notifInterval = setInterval(checkNotifications, 15 * 60 * 1000);
+    document.getElementById('notifBtn').textContent = '🔔';
+    document.getElementById('notifBtn').style.color = 'var(--green)';
+  }
 }
 
 // ======= GOOGLE DRIVE =======
@@ -833,9 +842,93 @@ function upsert(arr,obj){const i=arr.findIndex(x=>x.id===obj.id);if(i>=0)arr[i]=
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}
 function renderAll(){renderCalendar();renderMeetings();renderDemands();if(currentPrestadorId)renderPrestadorDetail();else renderPrestadores();}
 
+// ======= NOTIFICAÇÕES =======
+let notifInterval = null;
+
+async function requestNotifPermission() {
+  if (!('Notification' in window)) return false;
+  if (Notification.permission === 'granted') return true;
+  if (Notification.permission === 'denied') return false;
+  const result = await Notification.requestPermission();
+  return result === 'granted';
+}
+
+function sendNotif(title, body, tag) {
+  if (Notification.permission !== 'granted') return;
+  const n = new Notification(title, {
+    body,
+    tag,
+    icon: 'icon-192.png',
+    badge: 'icon-192.png',
+    renotify: false
+  });
+  n.onclick = () => { window.focus(); n.close(); };
+}
+
+function checkNotifications() {
+  if (Notification.permission !== 'granted') return;
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0,10);
+  const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate()+1);
+  const tomorrowStr = tomorrow.toISOString().slice(0,10);
+
+  // DEMANDAS
+  state.demands.filter(d => d.status !== 'concluida' && d.dueDate).forEach(d => {
+    // dia anterior
+    if (d.dueDate === tomorrowStr) {
+      sendNotif('⚠️ Prazo amanhã', `"${d.title}"${d.client?' — '+d.client:''}`, 'dem-prev-'+d.id);
+    }
+    // no dia
+    if (d.dueDate === todayStr) {
+      sendNotif('🔴 Prazo hoje!', `"${d.title}"${d.client?' — '+d.client:''}`, 'dem-hoje-'+d.id);
+    }
+  });
+
+  // REUNIÕES
+  state.meetings.filter(m => m.status === 'agendada' && m.date && m.time).forEach(m => {
+    const meetingDt = new Date(m.date + 'T' + m.time);
+    const diffMin = (meetingDt - now) / 60000;
+
+    // dia anterior
+    if (m.date === tomorrowStr) {
+      sendNotif('🗓 Reunião amanhã', `"${m.title}" às ${m.time}${m.local?' — '+m.local:''}`, 'mt-prev-'+m.id);
+    }
+    // no dia (manhã — quando abrir o app)
+    if (m.date === todayStr && diffMin > 30) {
+      sendNotif('🤝 Reunião hoje', `"${m.title}" às ${m.time}${m.local?' — '+m.local:''}`, 'mt-hoje-'+m.id);
+    }
+    // 30 minutos antes
+    if (diffMin > 0 && diffMin <= 30) {
+      sendNotif('⏰ Reunião em 30 min!', `"${m.title}" às ${m.time}${m.local?' — '+m.local:''}`, 'mt-30min-'+m.id);
+    }
+  });
+
+  // TAREFAS PRESTADORES
+  state.tasks.filter(t => t.status !== 'concluida' && t.dueDate).forEach(t => {
+    const prest = state.prestadores.find(p => p.id === t.prestadorId);
+    const nome = prest ? prest.nome.split(' ')[0] : 'Prestador';
+    if (t.dueDate === tomorrowStr) {
+      sendNotif('👤 Tarefa vence amanhã', `${nome}: "${t.title}"`, 'task-prev-'+t.id);
+    }
+    if (t.dueDate === todayStr) {
+      sendNotif('👤 Tarefa vence hoje!', `${nome}: "${t.title}"`, 'task-hoje-'+t.id);
+    }
+  });
+}
+
+async function initNotifications() {
+  const granted = await requestNotifPermission();
+  if (!granted) { toast('Ative as notificações para receber alertas.'); return; }
+  toast('✅ Notificações ativadas!');
+  checkNotifications();
+  // checa a cada 15 minutos
+  if (notifInterval) clearInterval(notifInterval);
+  notifInterval = setInterval(checkNotifications, 15 * 60 * 1000);
+}
+
 // ======= INIT =======
 window.onload = function() {
-  load(); // load local cache
+  load();
   if (typeof google !== 'undefined') initGoogleAuth();
 };
 </script>
